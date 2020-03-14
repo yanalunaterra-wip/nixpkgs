@@ -77,6 +77,16 @@
 }</programlisting>
     </para>
    </listitem>
+
+   <listitem>
+    <para>
+     The initrd SSH support now uses OpenSSH rather than Dropbear to allow the
+     use of Ed25519 keys and other OpenSSH-specific functionality.
+     If you used the <literal>config.boot.initrd.network.ssh.host</literal>
+     options, you'll get an error explaining how to convert your host keys and
+     migrate to the new <literal>config.boot.initrd.network.ssh.hostKeys</literal> option.
+    </para>
+   </listitem>
   </itemizedlist>
  </section>
 
