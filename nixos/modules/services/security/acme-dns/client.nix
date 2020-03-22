@@ -90,7 +90,6 @@ let cfg = config.services.acme-dns.client; in
 
     security.acme.certs = mapDomains ({ domainCfg, acmeDnsFile, ... }: {
       dnsProvider = lib.mkDefault "acme-dns";
-      enableCNAME = lib.mkDefault true;
       credentialsFile = lib.mkDefault
         (pkgs.writeText "lego-${domainCfg.certHost}-acme-dns.env" ''
           ACME_DNS_API_BASE=${domainCfg.server}

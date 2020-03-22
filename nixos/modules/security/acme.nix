@@ -316,12 +316,17 @@ in
                   certOpts ++ data.extraLegoRenewFlags);
                 acmeService = {
                   description = "Renew ACME Certificate for ${cert}";
-                  environment = {
-                    LEGO_EXPERIMENTAL_CNAME_SUPPORT = "true";
-                  };
                   after = [ "network.target" "network-online.target" ];
                   wants = [ "network-online.target" ];
                   wantedBy = [ "multi-user.target" ];
+                  # acme-dns requires CNAME support for _acme-challenge
+                  # records. This setting only affects the behaviour of
+                  # DNS-01 challenge propagation checks when a CNAME
+                  # record is present; see:
+                  #
+                  # * https://go-acme.github.io/lego/dns/#experimental-features
+                  # * https://github.com/go-acme/lego/blob/v3.5.0/challenge/dns01/dns_challenge.go#L179-L185
+                  environment.LEGO_EXPERIMENTAL_CNAME_SUPPORT = "true";
                   serviceConfig = {
                     Type = "oneshot";
                     # With RemainAfterExit the service is considered active even
