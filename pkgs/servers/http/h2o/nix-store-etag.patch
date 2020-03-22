@@ -1,0 +1,63 @@
+From 657e979cd14d8ab888fe7e33995395f66da94ff1 Mon Sep 17 00:00:00 2001
+From: Emily <vcs@emily.moe>
+Date: Sun, 22 Mar 2020 00:23:04 +0000
+Subject: [PATCH] use store hash as ETag in /nix/store
+
+---
+ include/h2o/filecache.h |  3 ++-
+ lib/common/filecache.c  | 16 ++++++++++++++++
+ 2 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/include/h2o/filecache.h b/include/h2o/filecache.h
+index 064e20e9..4296e3bf 100644
+--- a/include/h2o/filecache.h
++++ b/include/h2o/filecache.h
+@@ -29,7 +29,8 @@
+ #include "h2o/memory.h"
+ #include "h2o/time_.h"
+ 
+-#define H2O_FILECACHE_ETAG_MAXLEN (sizeof("\"deadbeef-deadbeefdeadbeef\"") - 1)
++/* + 2 to account for the surrounding quotes */
++#define H2O_FILECACHE_ETAG_MAXLEN (@nixStoreHashLen@ + 2)
+ 
+ typedef struct st_h2o_filecache_ref_t {
+     int fd;
+diff --git a/lib/common/filecache.c b/lib/common/filecache.c
+index 2ba4679d..bea1ce69 100644
+--- a/lib/common/filecache.c
++++ b/lib/common/filecache.c
+@@ -24,6 +24,8 @@
+ #include <fcntl.h>
+ #include <stddef.h>
+ #include <unistd.h>
++#include <limits.h>
++#include <stdlib.h>
+ #include "khash.h"
+ #include "h2o/memory.h"
+ #include "h2o/filecache.h"
+@@ -163,8 +165,22 @@ struct tm *h2o_filecache_get_last_modified(h2o_filecache_ref_t *ref, char *outbu
+ size_t h2o_filecache_get_etag(h2o_filecache_ref_t *ref, char *outbuf)
+ {
+     assert(ref->fd != -1);
++
++    if (ref->_etag.len == 0 && ref->st.st_mtime == 1) {
++        /* likely Nix store path, resolve link and check */
++        static const char nix_store_prefix[] = "@nixStoreDir@/";
++        static const size_t nix_store_prefix_len = sizeof(nix_store_prefix) - 1;
++        char *respath = realpath(ref->_path, NULL);
++        if (respath != NULL && strncmp(respath, nix_store_prefix, nix_store_prefix_len) == 0) {
++            /* set etag to store path hash */
++            ref->_etag.len = sprintf(ref->_etag.buf, "\"%.@nixStoreHashLen@s\"", respath + nix_store_prefix_len);
++        }
++        free(respath);
++    }
++
+     if (ref->_etag.len == 0)
+         ref->_etag.len = sprintf(ref->_etag.buf, "\"%08x-%zx\"", (unsigned)ref->st.st_mtime, (size_t)ref->st.st_size);
++
+     memcpy(outbuf, ref->_etag.buf, ref->_etag.len + 1);
+     return ref->_etag.len;
+ }
+-- 
+2.25.1
+

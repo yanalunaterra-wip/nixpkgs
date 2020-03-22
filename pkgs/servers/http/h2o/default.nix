@@ -1,4 +1,4 @@
-{ stdenv, fetchFromGitHub
+{ stdenv, fetchFromGitHub, substituteAll
 , pkgconfig, cmake, ninja
 , openssl, libuv, zlib
 }:
@@ -13,6 +13,15 @@ stdenv.mkDerivation rec {
     rev    = "refs/tags/v${version}";
     sha256 = "0lwg5sfsr7fw7cfy0hrhadgixm35b5cgcvlhwhbk89j72y1bqi6n";
   };
+
+  patches = [
+    (substituteAll rec {
+      src = ./nix-store-etag.patch;
+      nixStoreDir = builtins.storeDir;
+      nixStoreHashLen = with stdenv.lib;
+        stringLength (head (builtins.split "-" (baseNameOf "${src}")));
+    })
+  ];
 
   outputs = [ "out" "man" "dev" "lib" ];
 
