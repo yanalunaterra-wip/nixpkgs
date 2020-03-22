@@ -38,23 +38,11 @@ import ./make-test-python.nix {
 
     coredns = { nodes, pkgs, ... }:
       let
-        acmeZone = ''
-          $ORIGIN letsencrypt.org.
-          @            3600 SOA coredns.test. hostmaster. ( 2020032201 1 1 1 1 )
-          acme-v02.api   60 A   ${ipOf nodes.letsencrypt}
-        '';
-
-        webserverZone = ''
+        zoneFile = pkgs.writeText "db.webserver.test" ''
           $ORIGIN webserver.test.
           @     3600 SOA coredns.test. hostmaster. ( 2020032201 1 1 1 1 )
           hello   60 A   ${ipOf nodes.webserver}
         '';
-
-        setupZoneFile = domain: zone:
-          let
-            name = "db.${domain}";
-          in
-          "${pkgs.coreutils}/bin/cp --no-preserve=mode ${pkgs.writeText name zone} ${name}";
       in
       {
         imports = [ common ];
@@ -68,7 +56,9 @@ import ./make-test-python.nix {
           enable = true;
           config = ''
             letsencrypt.org {
-              file db.letsencrypt.org
+              template IN A {
+                answer "{{ .Name }} 60 IN A ${ipOf nodes.letsencrypt}"
+              }
             }
 
             acme-dns.test {
@@ -84,8 +74,7 @@ import ./make-test-python.nix {
         };
 
         systemd.services.coredns.serviceConfig.ExecStartPre = [
-          (setupZoneFile "letsencrypt.org" acmeZone)
-          (setupZoneFile "webserver.test" webserverZone)
+          "${pkgs.coreutils}/bin/cp --no-preserve=mode ${zoneFile} ${zoneFile.name}"
         ];
       };
 
