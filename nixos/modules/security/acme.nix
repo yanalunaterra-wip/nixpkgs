@@ -316,6 +316,9 @@ in
                   certOpts ++ data.extraLegoRenewFlags);
                 acmeService = {
                   description = "Renew ACME Certificate for ${cert}";
+                  environment = {
+                    LEGO_EXPERIMENTAL_CNAME_SUPPORT = "true";
+                  };
                   after = [ "network.target" "network-online.target" ];
                   wants = [ "network-online.target" ];
                   wantedBy = [ "multi-user.target" ];
