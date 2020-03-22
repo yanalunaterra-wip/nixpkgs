@@ -57,7 +57,7 @@ import ./make-test-python.nix {
           config = ''
             letsencrypt.org {
               template IN A {
-                answer "{{ .Name }} 60 IN A ${ipOf nodes.letsencrypt}"
+                answer "{{ .Name }} 60 A ${ipOf nodes.letsencrypt}"
               }
             }
 
