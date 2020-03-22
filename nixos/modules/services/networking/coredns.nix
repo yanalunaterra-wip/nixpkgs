@@ -44,6 +44,8 @@ in {
         ExecStart = "${getBin cfg.package}/bin/coredns -conf=${configFile}";
         ExecReload = "${pkgs.coreutils}/bin/kill -SIGUSR1 $MAINPID";
         Restart = "on-failure";
+        StateDirectory = "coredns";
+        WorkingDirectory = "/var/lib/coredns";
       };
     };
   };
