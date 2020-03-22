@@ -5,7 +5,6 @@ let
   ipOf = node: node.config.networking.primaryIPAddress;
 
   common = { lib, nodes, ... }: {
-    imports = [ ./common/letsencrypt/common.nix ];
     networking.nameservers = lib.mkForce [ (ipOf nodes.coredns) ];
   };
 in
@@ -14,6 +13,8 @@ import ./make-test-python.nix {
   name = "acme-dns";
 
   nodes = {
+    acme.imports = [ ./common/acme/server common ];
+
     acme_dns = { nodes, pkgs, ... }: {
       imports = [ common ];
 
@@ -55,9 +56,9 @@ import ./make-test-python.nix {
         services.coredns = {
           enable = true;
           config = ''
-            letsencrypt.org {
+            acme.test {
               template IN A {
-                answer "{{ .Name }} 60 A ${ipOf nodes.letsencrypt}"
+                answer "{{ .Name }} 60 A ${ipOf nodes.acme}"
               }
             }
 
@@ -78,18 +79,12 @@ import ./make-test-python.nix {
         ];
       };
 
-    letsencrypt = {
-      imports = [ ./common/letsencrypt common ];
-    };
-
-    webclient = {
-      imports = [ common ];
-    };
+    webclient.imports = [ ./common/acme/client common ];
 
     webserver = { config, pkgs, ... }: {
-      imports = [ common ];
+      imports = [ ./common/acme/client common ];
 
-      security.acme.server = "https://acme-v02.api.letsencrypt.org/dir";
+      security.acme.server = "https://acme.test/dir";
 
       services.acme-dns.client = {
         enable = true;
@@ -137,9 +132,9 @@ import ./make-test-python.nix {
 
     start_all()
 
+    acme.wait_for_unit("pebble.service")
     acme_dns.wait_for_unit("acme-dns.service")
     coredns.wait_for_unit("coredns.service")
-    letsencrypt.wait_for_unit("pebble.service")
 
     retry(wait_for_acme_dns_challenge)
 
@@ -161,12 +156,8 @@ import ./make-test-python.nix {
 
     webclient.wait_for_unit("default.target")
 
-    webclient.succeed(
-        "curl https://acme-v02.api.letsencrypt.org:15000/roots/0 > /tmp/ca.crt"
-    )
-    webclient.succeed(
-        "curl https://acme-v02.api.letsencrypt.org:15000/intermediate-keys/0 >> /tmp/ca.crt"
-    )
+    webclient.succeed("curl https://acme.test:15000/roots/0 > /tmp/ca.crt")
+    webclient.succeed("curl https://acme.test:15000/intermediate-keys/0 >> /tmp/ca.crt")
     webclient.succeed(
         "curl --cacert /tmp/ca.crt https://hello.webserver.test | grep -qF 'hello world'"
     )

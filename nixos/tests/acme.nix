@@ -1,5 +1,5 @@
 let
-  commonConfig = ./common/letsencrypt/common.nix;
+  commonConfig = ./common/acme/client;
 
   dnsScript = {writeScript, dnsAddress, bash, curl}: writeScript "dns-hook.sh" ''
     #!${bash}/bin/bash
@@ -16,8 +16,8 @@ in import ./make-test-python.nix {
   name = "acme";
 
   nodes = rec {
-    letsencrypt = { nodes, lib, ... }: {
-      imports = [ ./common/letsencrypt ];
+    acme = { nodes, lib, ... }: {
+      imports = [ ./common/acme/server ];
       networking.nameservers = lib.mkForce [
         nodes.dnsserver.config.networking.primaryIPAddress
       ];
@@ -46,7 +46,7 @@ in import ./make-test-python.nix {
       ];
       networking.firewall.allowedTCPPorts = [ 80 ];
       security.acme = {
-        server = "https://acme-v02.api.letsencrypt.org/dir";
+        server = "https://acme.test/dir";
         certs."standalone.com" = {
             webroot = "/var/lib/acme/acme-challenges";
         };
@@ -89,7 +89,7 @@ in import ./make-test-python.nix {
         '';
       };
 
-      security.acme.server = "https://acme-v02.api.letsencrypt.org/dir";
+      security.acme.server = "https://acme.test/dir";
 
       nesting.clone = [
         ({pkgs, ...}: {
@@ -161,20 +161,20 @@ in import ./make-test-python.nix {
       client.start()
       dnsserver.start()
 
-      letsencrypt.wait_for_unit("default.target")
+      acme.wait_for_unit("default.target")
       dnsserver.wait_for_unit("pebble-challtestsrv.service")
       client.succeed(
-          'curl --data \'{"host": "acme-v02.api.letsencrypt.org", "addresses": ["${nodes.letsencrypt.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
+          'curl --data \'{"host": "acme.test", "addresses": ["${nodes.acme.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
       )
       client.succeed(
           'curl --data \'{"host": "standalone.com", "addresses": ["${nodes.acmeStandalone.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
       )
 
-      letsencrypt.start()
+      acme.start()
       acmeStandalone.start()
 
-      letsencrypt.wait_for_unit("default.target")
-      letsencrypt.wait_for_unit("pebble.service")
+      acme.wait_for_unit("default.target")
+      acme.wait_for_unit("pebble.service")
 
       with subtest("can request certificate with HTTPS-01 challenge"):
           acmeStandalone.wait_for_unit("default.target")
@@ -183,10 +183,8 @@ in import ./make-test-python.nix {
 
       client.wait_for_unit("default.target")
 
-      client.succeed("curl https://acme-v02.api.letsencrypt.org:15000/roots/0 > /tmp/ca.crt")
-      client.succeed(
-          "curl https://acme-v02.api.letsencrypt.org:15000/intermediate-keys/0 >> /tmp/ca.crt"
-      )
+      client.succeed("curl https://acme.test:15000/roots/0 > /tmp/ca.crt")
+      client.succeed("curl https://acme.test:15000/intermediate-keys/0 >> /tmp/ca.crt")
 
       with subtest("Can request certificate for nginx service"):
           webserver.wait_for_unit("acme-finished-a.example.com.target")
