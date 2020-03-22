@@ -1,0 +1,69 @@
+From b2e4dc8996bb15f102474c3c1cadcd837812536e Mon Sep 17 00:00:00 2001
+From: Emily <vcs@emily.moe>
+Date: Sun, 22 Mar 2020 00:10:53 +0000
+Subject: [PATCH] fileserver: Use store hash as ETag in /nix/store
+
+---
+ modules/caddyhttp/fileserver/staticfiles.go | 28 ++++++++++++++++++---
+ 1 file changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/modules/caddyhttp/fileserver/staticfiles.go b/modules/caddyhttp/fileserver/staticfiles.go
+index d6cf4d65..d458fbb5 100644
+--- a/modules/caddyhttp/fileserver/staticfiles.go
++++ b/modules/caddyhttp/fileserver/staticfiles.go
+@@ -200,7 +200,7 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
+ 
+ 	// set the ETag - note that a conditional If-None-Match request is handled
+ 	// by http.ServeContent below, which checks against this ETag value
+-	w.Header().Set("ETag", calculateEtag(info))
++	w.Header().Set("ETag", calculateEtag(info, filename))
+ 
+ 	if w.Header().Get("Content-Type") == "" {
+ 		mtyp := mime.TypeByExtension(filepath.Ext(filename))
+@@ -372,12 +372,32 @@ func (fsrv *FileServer) notFound(w http.ResponseWriter, r *http.Request, next ca
+ // of the file to make a hash of all the bytes. ¯\_(ツ)_/¯
+ // Prefix the etag with "W/" to convert it into a weak etag.
+ // See: https://tools.ietf.org/html/rfc7232#section-2.3
+-func calculateEtag(d os.FileInfo) string {
+-	t := strconv.FormatInt(d.ModTime().Unix(), 36)
++func calculateEtag(d os.FileInfo, filename string) string {
++	unixModTime := d.ModTime().Unix()
++
++	if unixModTime == 1 {
++		// likely Nix store path, resolve link and check
++		path, err := realPath(filename)
++		if err == nil && strings.HasPrefix(path, nixStorePrefix) {
++			storeHash := path[len(nixStorePrefix):len(nixStorePrefix)+@nixStoreHashLen@]
++			return `"` + storeHash + `"`
++		}
++	}
++
++	t := strconv.FormatInt(unixModTime, 36)
+ 	s := strconv.FormatInt(d.Size(), 36)
+ 	return `"` + t + s + `"`
+ }
+ 
++func realPath(path string) (string, error) {
++	path, err := filepath.Abs(path)
++	if err != nil {
++		return "", err
++	}
++
++	return filepath.EvalSymlinks(path)
++}
++
+ func redirect(w http.ResponseWriter, r *http.Request, to string) error {
+ 	for strings.HasPrefix(to, "//") {
+ 		// prevent path-based open redirects
+@@ -397,6 +417,8 @@ var bufPool = sync.Pool{
+ 
+ const minBackoff, maxBackoff = 2, 5
+ 
++const nixStorePrefix = "@nixStoreDir@/"
++
+ // Interface guards
+ var (
+ 	_ caddy.Provisioner           = (*FileServer)(nil)
+-- 
+2.25.1
+

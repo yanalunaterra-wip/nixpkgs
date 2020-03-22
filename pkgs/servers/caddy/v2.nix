@@ -1,4 +1,4 @@
-{ stdenv, callPackage, buildGoModule, fetchFromGitHub, Security }:
+{ stdenv, buildGoModule, fetchFromGitHub, substituteAll, Security }:
 
 buildGoModule rec {
   pname = "caddy";
@@ -15,6 +15,15 @@ buildGoModule rec {
     sha256 = "1vagcw6ibri4nbx1n60xp7rffcfr64a2202hjaijyjzc8wcl80na";
   };
   modSha256 = "1sb8w6n84cpya2rjm0zm798kzf5vjpkr5440j1gfnnnr07jl2aqn";
+
+  patches = [
+    (substituteAll rec {
+      src = ./nix-store-etag.patch;
+      nixStoreDir = builtins.storeDir;
+      nixStoreHashLen = with stdenv.lib;
+        stringLength (head (builtins.split "-" (baseNameOf "${src}")));
+    })
+  ];
 
   buildInputs = stdenv.lib.optionals stdenv.isDarwin [ Security ];
 
