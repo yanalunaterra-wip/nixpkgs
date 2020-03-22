@@ -1,7 +1,28 @@
 let
   commonConfig = ./common/letsencrypt/common.nix;
 
-  defaultDnsTestConfig = {
+  dnsScript = {writeScript, dnsAddress, bash, curl}: writeScript "dns-hook.sh" ''
+    #!${bash}/bin/bash
+    set -euo pipefail
+    echo '[INFO]' "[$2]" 'dns-hook.sh' $*
+    if [ "$1" = "present" ]; then
+      ${curl}/bin/curl --data '{"host": "'"$2"'", "value": "'"$3"'"}' http://${dnsAddress}:8055/set-txt
+    else
+      ${curl}/bin/curl --data '{"host": "'"$2"'"}' http://${dnsAddress}:8055/clear-txt
+    fi
+  '';
+
+in import ./make-test-python.nix {
+  name = "acme";
+
+  nodes = rec {
+    letsencrypt = { nodes, lib, ... }: {
+      imports = [ ./common/letsencrypt ];
+      networking.nameservers = lib.mkForce [
+        nodes.dnsserver.config.networking.primaryIPAddress
+      ];
+    };
+
     dnsserver = { nodes, pkgs, ... }: {
       networking.firewall.allowedTCPPorts = [ 8055 53 ];
       networking.firewall.allowedUDPPorts = [ 53 ];
@@ -17,58 +38,6 @@ let
         };
       };
     };
-
-    webserverDnsExtraConfig = { nodes, pkgs, ... }: let
-      dnsScript = {writeScript, dnsAddress, bash, curl}: writeScript "dns-hook.sh" ''
-        #!${bash}/bin/bash
-        set -euo pipefail
-        echo '[INFO]' "[$2]" 'dns-hook.sh' $*
-        if [ "$1" = "present" ]; then
-          ${curl}/bin/curl --data '{"host": "'"$2"'", "value": "'"$3"'"}' http://${dnsAddress}:8055/set-txt
-        else
-          ${curl}/bin/curl --data '{"host": "'"$2"'"}' http://${dnsAddress}:8055/clear-txt
-        fi
-      '';
-    in {
-      security.acme.certs."example.com" = {
-        dnsProvider = "exec";
-        credentialsFile = with pkgs; writeText "wildcard.env" ''
-          EXEC_PATH=${dnsScript {
-            inherit writeScript bash curl;
-            dnsAddress = nodes.dnsserver.config.networking.primaryIPAddress;
-          }}
-        '';
-      };
-    };
-
-    setUpDnsServer = { nodes, ... }: ''
-      dnsserver.wait_for_unit("pebble-challtestsrv.service")
-      client.succeed(
-          'curl --data \'{"host": "acme-v02.api.letsencrypt.org", "addresses": ["${nodes.letsencrypt.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
-      )
-      client.succeed(
-          'curl --data \'{"host": "standalone.com", "addresses": ["${nodes.acmeStandalone.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
-      )
-    '';
-  };
-in
-
-{ dnsTestConfig ? defaultDnsTestConfig
-, ...
-}@args:
-
-import ./make-test-python.nix {
-  name = "acme";
-
-  nodes = rec {
-    letsencrypt = { nodes, lib, ... }: {
-      imports = [ ./common/letsencrypt ];
-      networking.nameservers = lib.mkForce [
-        nodes.dnsserver.config.networking.primaryIPAddress
-      ];
-    };
-
-    inherit (dnsTestConfig) dnsserver;
 
     acmeStandalone = { nodes, lib, config, pkgs, ... }: {
       imports = [ commonConfig ];
@@ -139,11 +108,14 @@ import ./make-test-python.nix {
             '';
           };
         })
-        ({pkgs, config, nodes, lib, ...}@args: {
-          imports = [ (dnsTestConfig.webserverDnsExtraConfig args) ];
+        ({pkgs, config, nodes, lib, ...}: {
           security.acme.certs."example.com" = {
             domain = "*.example.com";
-            dnsPropagationCheck = lib.mkDefault false;
+            dnsProvider = "exec";
+            dnsPropagationCheck = false;
+            credentialsFile = with pkgs; writeText "wildcard.env" ''
+              EXEC_PATH=${dnsScript { inherit writeScript bash curl; dnsAddress = nodes.dnsserver.config.networking.primaryIPAddress; }}
+            '';
             user = config.services.nginx.user;
             group = config.services.nginx.group;
           };
@@ -175,7 +147,7 @@ import ./make-test-python.nix {
     };
   };
 
-  testScript = {nodes, ...}@args:
+  testScript = {nodes, ...}:
     let
       newServerSystem = nodes.webserver.config.system.build.toplevel;
       switchToNewServer = "${newServerSystem}/bin/switch-to-configuration test";
@@ -190,7 +162,14 @@ import ./make-test-python.nix {
       dnsserver.start()
 
       letsencrypt.wait_for_unit("default.target")
-      ${dnsTestConfig.setUpDnsServer args}
+      dnsserver.wait_for_unit("pebble-challtestsrv.service")
+      client.succeed(
+          'curl --data \'{"host": "acme-v02.api.letsencrypt.org", "addresses": ["${nodes.letsencrypt.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
+      )
+      client.succeed(
+          'curl --data \'{"host": "standalone.com", "addresses": ["${nodes.acmeStandalone.config.networking.primaryIPAddress}"]}\' http://${nodes.dnsserver.config.networking.primaryIPAddress}:8055/add-a'
+      )
+
       letsencrypt.start()
       acmeStandalone.start()
 
@@ -211,8 +190,6 @@ import ./make-test-python.nix {
 
       with subtest("Can request certificate for nginx service"):
           webserver.wait_for_unit("acme-finished-a.example.com.target")
-          webserver.wait_for_unit("nginx.service")
-          webserver.wait_for_open_port(443)
           client.succeed(
               "curl --cacert /tmp/ca.crt https://a.example.com/ | grep -qF 'hello world'"
           )
@@ -238,4 +215,4 @@ import ./make-test-python.nix {
               "curl --cacert /tmp/ca.crt https://c.example.com/ | grep -qF 'hello world'"
           )
     '';
-} args
+}

@@ -1,54 +1,185 @@
 # TODO: Test services.acme-dns.server.api.tls once
 # https://github.com/joohoi/acme-dns/issues/214 is fixed.
 
-{ ... }@args:
+let
+  ipOf = node: node.config.networking.primaryIPAddress;
 
-import ./acme.nix ({ dnsTestConfig = {
-  dnsserver = { nodes, pkgs, ... }: {
-    networking.firewall.allowedTCPPorts = [ 8053 53 ];
-    networking.firewall.allowedUDPPorts = [ 53 ];
-    services.acme-dns.server = {
-      enable = true;
-      general = {
-        domain = "acme-dns.example.com";
-        nsadmin = "hostmaster.example.com";
-        records = [
-          "example.com. A ${nodes.webserver.config.networking.primaryIPAddress}"
-          # TODO FIXME: why do CNAMEs not work here?
-          "a.example.com. A ${nodes.webserver.config.networking.primaryIPAddress}"
-          "b.example.com. A ${nodes.webserver.config.networking.primaryIPAddress}"
-          "c.example.com. A ${nodes.webserver.config.networking.primaryIPAddress}"
-          # "a.example.com. CNAME example.com."
-          # "b.example.com. CNAME example.com."
-          # "c.example.com. CNAME example.com."
-          "example.com. NS acme-dns.example.com."
-          # TODO: _acme-challenge
+  common = { lib, nodes, ... }: {
+    imports = [ ./common/letsencrypt/common.nix ];
+    networking.nameservers = lib.mkForce [ (ipOf nodes.coredns) ];
+  };
+in
 
-          "acme-dns.example.com. A ${nodes.dnsserver.config.networking.primaryIPAddress}"
-          "acme-dns.example.com. NS acme-dns.example.com."
+import ./make-test-python.nix {
+  name = "acme-dns";
 
-          "standalone.com. A ${nodes.acmeStandalone.config.networking.primaryIPAddress}"
-          "standalone.com. NS acme-dns.example.com."
+  nodes = {
+    acme_dns = { nodes, pkgs, ... }: {
+      imports = [ common ];
 
-          "acme-v02.api.letsencrypt.org. A ${nodes.letsencrypt.config.networking.primaryIPAddress}"
-          "acme-v02.api.letsencrypt.org. NS acme-dns.example.com."
+      networking.firewall = {
+        allowedTCPPorts = [ 53 8053 ];
+        allowedUDPPorts = [ 53 ];
+      };
+
+      services.acme-dns.server = {
+        enable = true;
+        api.ip = "0.0.0.0";
+        general = {
+          domain = "acme-dns.test";
+          nsadmin = "hostmaster.acme-dns.test";
+          records = [
+            "acme-dns.test. A ${ipOf nodes.acme_dns}"
+            "acme-dns.test. NS acme-dns.test."
+          ];
+        };
+      };
+    };
+
+    coredns = { nodes, pkgs, ... }:
+      let
+        acmeZone = ''
+          $ORIGIN letsencrypt.org.
+          @            3600 SOA coredns.test. hostmaster. ( 2020032201 1 1 1 1 )
+          acme-v02.api   60 A   ${ipOf nodes.letsencrypt}
+        '';
+
+        webserverZone = ''
+          $ORIGIN webserver.test.
+          @     3600 SOA coredns.test. hostmaster. ( 2020032201 1 1 1 1 )
+          hello   60 A   ${ipOf nodes.webserver}
+        '';
+
+        setupZoneFile = domain: zone:
+          let
+            name = "db.${domain}";
+          in
+          "${pkgs.coreutils}/bin/cp --no-preserve=mode ${pkgs.writeText name zone} ${name}";
+      in
+      {
+        imports = [ common ];
+
+        networking.firewall = {
+          allowedTCPPorts = [ 53 ];
+          allowedUDPPorts = [ 53 ];
+        };
+
+        services.coredns = {
+          enable = true;
+          config = ''
+            letsencrypt.org {
+              file db.letsencrypt.org
+            }
+
+            acme-dns.test {
+              forward . ${ipOf nodes.acme_dns}
+            }
+
+            webserver.test {
+              file db.webserver.test {
+                reload 1s
+              }
+            }
+          '';
+        };
+
+        systemd.services.coredns.serviceConfig.ExecStartPre = [
+          (setupZoneFile "letsencrypt.org" acmeZone)
+          (setupZoneFile "webserver.test" webserverZone)
         ];
       };
-      api.ip = "0.0.0.0";
+
+    letsencrypt = {
+      imports = [ ./common/letsencrypt common ];
+    };
+
+    webclient = {
+      imports = [ common ];
+    };
+
+    webserver = { config, pkgs, ... }: {
+      imports = [ common ];
+
+      security.acme.server = "https://acme-v02.api.letsencrypt.org/dir";
+
+      services.acme-dns.client = {
+        enable = true;
+        domains."webserver.test" = { server = "http://acme-dns.test:8053"; };
+      };
+
+      security.acme.certs."webserver.test" = {
+        domain = "*.webserver.test";
+        user = "nginx";
+        group = "nginx";
+      };
+
+      services.nginx.enable = true;
+
+      nesting.clone = [
+        {
+          networking.firewall.allowedTCPPorts = [ 443 ];
+
+          services.nginx.virtualHosts."hello.webserver.test" =
+            let
+              certDir = config.security.acme.certs."webserver.test".directory;
+            in
+            {
+              onlySSL = true;
+              sslCertificate = "${certDir}/cert.pem";
+              sslTrustedCertificate = "${certDir}/full.pem";
+              sslCertificateKey = "${certDir}/key.pem";
+              locations."/".root = pkgs.runCommand "root" {} ''
+                mkdir $out
+                echo "hello world" > $out/index.html
+              '';
+            };
+        }
+      ];
     };
   };
 
-  webserverDnsExtraConfig = { nodes, ... }: {
-    security.acme.certs."example.com".dnsPropagationCheck = true;
-    services.acme-dns.client = {
-      enable = true;
-      domains."example.com" = { server = "http://acme-dns.example.com:8053"; };
-    };
-  };
+  testScript = ''
+    import json
 
-  setUpDnsServer = { ... }: ''
-    dnsserver.wait_for_unit("acme-dns.service")
-    dnsserver.wait_for_open_port(53)
-    dnsserver.wait_for_open_port(8053)
+
+    def wait_for_acme_dns_challenge(_) -> bool:
+        return webserver.get_unit_info("acme-webserver.test")["ActiveState"] == "failed"
+
+
+    start_all()
+
+    acme_dns.wait_for_unit("acme-dns.service")
+    coredns.wait_for_unit("coredns.service")
+    letsencrypt.wait_for_unit("pebble.service")
+
+    retry(wait_for_acme_dns_challenge)
+
+    acme_dns_data = webserver.succeed("cat /var/lib/acme/webserver.test/acme-dns.json")
+    acme_dns_domain = json.loads(acme_dns_data)["webserver.test"]["FullDomain"]
+
+    webserver_zone_file = "/var/lib/coredns/db.webserver.test"
+    coredns.succeed(
+        f"echo _acme-challenge 60 CNAME {acme_dns_domain}. >> {webserver_zone_file}"
+    )
+    coredns.succeed(f"sed -i s/2020032201/2020032202/ {webserver_zone_file}")
+
+    webserver.start_job("acme-webserver.test")
+    webserver.wait_for_unit("acme-webserver.test")
+
+    webserver.succeed(
+        "/run/current-system/fine-tune/child-1/bin/switch-to-configuration test"
+    )
+
+    webclient.wait_for_unit("default.target")
+
+    webclient.succeed(
+        "curl https://acme-v02.api.letsencrypt.org:15000/roots/0 > /tmp/ca.crt"
+    )
+    webclient.succeed(
+        "curl https://acme-v02.api.letsencrypt.org:15000/intermediate-keys/0 >> /tmp/ca.crt"
+    )
+    webclient.succeed(
+        "curl --cacert /tmp/ca.crt https://hello.webserver.test | grep -qF 'hello world'"
+    )
   '';
-}; } // args)
+}
