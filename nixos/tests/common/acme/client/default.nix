@@ -5,10 +5,6 @@ let
 in
 
 {
-  networking.nameservers = [
-    nodes.acme.config.networking.primaryIPAddress
-  ];
-
   security.acme.acceptTerms = true;
   security.acme.email = "webmaster@example.com";
 

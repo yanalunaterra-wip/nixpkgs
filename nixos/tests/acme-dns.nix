@@ -13,9 +13,9 @@ import ./make-test-python.nix {
   name = "acme-dns";
 
   nodes = {
-    acme.imports = [ ./common/acme/server common ];
+    acme.imports = [ common ./common/acme/server ];
 
-    acme_dns = { nodes, pkgs, ... }: {
+    acmedns = { nodes, pkgs, ... }: {
       imports = [ common ];
 
       networking.firewall = {
@@ -30,59 +30,58 @@ import ./make-test-python.nix {
           domain = "acme-dns.test";
           nsadmin = "hostmaster.acme-dns.test";
           records = [
-            "acme-dns.test. A ${ipOf nodes.acme_dns}"
+            "acme-dns.test. A ${ipOf nodes.acmedns}"
             "acme-dns.test. NS acme-dns.test."
           ];
         };
       };
     };
 
-    coredns = { nodes, pkgs, ... }:
-      let
-        zoneFile = pkgs.writeText "db.webserver.test" ''
-          $ORIGIN webserver.test.
-          @     3600 SOA coredns.test. hostmaster. ( 2020032201 1 1 1 1 )
-          hello   60 A   ${ipOf nodes.webserver}
-        '';
-      in
-      {
-        imports = [ common ];
+    coredns = { nodes, pkgs, ... }: {
+      imports = [ common ];
 
-        networking.firewall = {
-          allowedTCPPorts = [ 53 ];
-          allowedUDPPorts = [ 53 ];
-        };
-
-        services.coredns = {
-          enable = true;
-          config = ''
-            acme.test {
-              template IN A {
-                answer "{{ .Name }} 60 A ${ipOf nodes.acme}"
-              }
-            }
-
-            acme-dns.test {
-              forward . ${ipOf nodes.acme_dns}
-            }
-
-            webserver.test {
-              file db.webserver.test {
-                reload 1s
-              }
-            }
-          '';
-        };
-
-        systemd.services.coredns.serviceConfig.ExecStartPre = [
-          "${pkgs.coreutils}/bin/cp --no-preserve=mode ${zoneFile} ${zoneFile.name}"
-        ];
+      networking.firewall = {
+        allowedTCPPorts = [ 53 ];
+        allowedUDPPorts = [ 53 ];
       };
 
-    webclient.imports = [ ./common/acme/client common ];
+      environment.etc."coredns/zones/db.webserver.test" = {
+        text = ''
+          $ORIGIN webserver.test.
+          @ 3600 SOA coredns.test. hostmaster.webserver.test. (
+            1 ; serial
+            86400 7200 600000 1
+          )
+          hello 3600 A ${ipOf nodes.webserver}
+        '';
+        mode = "0644";
+      };
+
+      services.coredns = {
+        enable = true;
+        config = ''
+          acme.test {
+            template IN A {
+              answer "{{ .Name }} 60 A ${ipOf nodes.acme}"
+            }
+          }
+
+          acme-dns.test {
+            forward . ${ipOf nodes.acmedns}
+          }
+
+          webserver.test {
+            auto {
+              directory /etc/coredns/zones
+              reload 1s
+            }
+          }
+        '';
+      };
+    };
 
     webserver = { config, pkgs, ... }: {
-      imports = [ ./common/acme/client common ];
+      imports = [ common ./common/acme/client ];
 
       security.acme.server = "https://acme.test/dir";
 
@@ -103,59 +102,59 @@ import ./make-test-python.nix {
         {
           networking.firewall.allowedTCPPorts = [ 443 ];
 
-          services.nginx.virtualHosts."hello.webserver.test" =
-            let
-              certDir = config.security.acme.certs."webserver.test".directory;
-            in
-            {
-              onlySSL = true;
-              sslCertificate = "${certDir}/cert.pem";
-              sslTrustedCertificate = "${certDir}/full.pem";
-              sslCertificateKey = "${certDir}/key.pem";
-              locations."/".root = pkgs.runCommand "root" {} ''
-                mkdir $out
-                echo "hello world" > $out/index.html
-              '';
-            };
+          services.nginx.virtualHosts."hello.webserver.test" = {
+            onlySSL = true;
+            useACMEHost = "webserver.test";
+            locations."/".root = pkgs.runCommand "root" {} ''
+              mkdir $out
+              echo "hello world" > $out/index.html
+            '';
+          };
         }
       ];
     };
+
+    webclient.imports = [ common ./common/acme/client ];
   };
 
   testScript = ''
     import json
 
-
-    def wait_for_acme_dns_challenge(_) -> bool:
-        return webserver.get_unit_info("acme-webserver.test")["ActiveState"] == "failed"
-
-
     start_all()
 
     acme.wait_for_unit("pebble.service")
-    acme_dns.wait_for_unit("acme-dns.service")
+    acmedns.wait_for_unit("acme-dns.service")
     coredns.wait_for_unit("coredns.service")
 
-    retry(wait_for_acme_dns_challenge)
 
-    acme_dns_data = webserver.succeed("cat /var/lib/acme/webserver.test/acme-dns.json")
-    acme_dns_domain = json.loads(acme_dns_data)["webserver.test"]["FullDomain"]
+    def wait_for_acme_dns_check(_) -> bool:
+        info = webserver.get_unit_info("acme-dns-webserver.test-check.service")
+        return info["ActiveState"] == "failed"
 
-    webserver_zone_file = "/var/lib/coredns/db.webserver.test"
-    coredns.succeed(
-        f"echo _acme-challenge 60 CNAME {acme_dns_domain}. >> {webserver_zone_file}"
+
+    # Get the required CNAME record from the acme-dns-*-check.service
+    # error message.
+    retry(wait_for_acme_dns_check)
+    print(
+        webserver.succeed(
+            "journalctl -fu acme-dns-webserver.test-check.service | grep -m 1 CNAME"
+        )
     )
-    coredns.succeed(f"sed -i s/2020032201/2020032202/ {webserver_zone_file}")
+    askdjasd
 
-    webserver.start_job("acme-webserver.test")
-    webserver.wait_for_unit("acme-webserver.test")
+    zone_file = "/etc/coredns/zones/db.webserver.test"
+    coredns.succeed(
+        f"echo '_acme-challenge 1 CNAME {acme_dns_domain}.' >> {zone_file}",
+        f"sed -i 's/1 ; serial/2 ; serial/' {zone_file}",
+    )
 
+    webserver.start_job("acme-webserver.test.service")
+    webserver.wait_for_unit("acme-webserver.test.service")
     webserver.succeed(
         "/run/current-system/fine-tune/child-1/bin/switch-to-configuration test"
     )
 
     webclient.wait_for_unit("default.target")
-
     webclient.succeed("curl https://acme.test:15000/roots/0 > /tmp/ca.crt")
     webclient.succeed("curl https://acme.test:15000/intermediate-keys/0 >> /tmp/ca.crt")
     webclient.succeed(

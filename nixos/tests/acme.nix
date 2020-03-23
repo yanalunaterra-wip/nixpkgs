@@ -1,5 +1,10 @@
 let
-  commonConfig = ./common/acme/client;
+  commonConfig = { nodes, ... }: {
+    imports = [ ./common/acme/client ];
+    networking.nameservers = [
+       nodes.acme.config.networking.primaryIPAddress
+    ];
+  };
 
   dnsScript = {writeScript, dnsAddress, bash, curl}: writeScript "dns-hook.sh" ''
     #!${bash}/bin/bash

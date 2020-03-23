@@ -12,33 +12,23 @@ let cfg = config.services.acme-dns.client; in
       description = ''
         Domains to register with an acme-dns server.
 
-        The <literal>security.acme.certs.*.{dnsProvider,acmeDnsFile}</literal>
+        The <option>security.acme.certs.*.{dnsProvider,acmeDnsFile}</option>
         options are filled in automatically for each domain specified.
       '';
       default = {};
       type = types.attrsOf (types.submodule ({ name, ... }: {
         options = {
-          certHost = mkOption {
-            type = types.str;
-            description = ''
-              The <literal>security.acme.certs.*</literal> key to use with
-              this domain registration.
-            '';
-            default = name;
-          };
-
           server = mkOption {
             type = types.nullOr types.str;
             description = ''
               The base URL of the acme-dns server's HTTP API. Uses the
-              <literal>services.acme-dns.server</literal> configuration
+              <option>services.acme-dns.server</option> configuration
               by default.
             '';
             default = null;
             example = "https://acme-dns.example.com";
           };
 
-          # TODO: re-register on change
           allowUpdateFromIPs = mkOption {
             type = types.listOf types.str;
             description = ''
@@ -49,6 +39,7 @@ let cfg = config.services.acme-dns.client; in
             '';
             default = [];
           };
+
         };
       }));
       default = {};
@@ -66,8 +57,12 @@ let cfg = config.services.acme-dns.client; in
           proto = if api.tls == "none" then "http" else "https";
         in "${proto}://${general.domain}:${toString api.port}";
       };
-      cert = config.security.acme.certs.${domainCfg.certHost};
-      acmeDnsFile = "${cert.directory}/acme-dns.json";
+      cert = config.security.acme.certs.${domain};
+      # We embed the configuration hash in the credentials path to ensure
+      # that domains are re-registered on configuration changes.
+      acmeDnsFile = let domainCfgHash = builtins.hashString "sha256"
+        (builtins.toJSON domainCfg);
+      in "${cert.directory}/acme-dns-${domainCfgHash}.json";
     };
 
     domainMapper = f: domain: baseCfg: f (domainEnv domain baseCfg);
@@ -75,23 +70,11 @@ let cfg = config.services.acme-dns.client; in
     mapDomainsToList = f: mapAttrsToList (domainMapper f) cfg.domains;
     mapDomains' = f: listToAttrs (mapDomainsToList f);
   in mkIf cfg.enable {
-    # TODO: relax? (requirement is due to use of
-    # systemd.services.*.serviceConfig.StateDirectory)
-    assertions = mapDomainsToList ({ domainCfg, cert, ... }: {
-      assertion = hasPrefix "/var/lib/" cert.directory;
-      message = ''
-        The acme-dns module requires that all certificates in
-        services.acme-dns.domains must have a
-        security.acme.certs.*.directory starting with /var/lib, but:
 
-          security.acme.certs.${escapeNixString domainCfg.certHost}.directory = ${escapeNixString cert.directory};
-      '';
-    });
-
-    security.acme.certs = mapDomains ({ domainCfg, acmeDnsFile, ... }: {
+    security.acme.certs = mapDomains ({ domain, domainCfg, acmeDnsFile, ... }: {
       dnsProvider = lib.mkDefault "acme-dns";
       credentialsFile = lib.mkDefault
-        (pkgs.writeText "lego-${domainCfg.certHost}-acme-dns.env" ''
+        (pkgs.writeText "lego-${domain}-acme-dns.env" ''
           ACME_DNS_API_BASE=${domainCfg.server}
           ACME_DNS_STORAGE_PATH=${acmeDnsFile}
         '');
@@ -103,37 +86,28 @@ let cfg = config.services.acme-dns.client; in
 
       register = { domain, domainCfg, cert, acmeDnsFile, ... }: {
         description = "Register acme-dns subdomain for ${domain}";
+        after = [ "network-online.target" ];
         # TODO FIXME: is openssl needed here?
-        path = [ pkgs.curl pkgs.openssl ];
+        path = [ pkgs.curl pkgs.openssl pkgs.jq ];
         serviceConfig = {
           User = cert.user;
           Group = cert.group;
           # Ensure that the certificate directory exists.
-          StateDirectory = removePrefix "/var/lib/" cert.directory;
+          StateDirectory = "acme/${domain}";
           StateDirectoryMode = "0700";
         };
-        # Only run if acme-dns.json doesn't already exist.
+        # Only run if acme-dns-*.json doesn't already exist.
         unitConfig.ConditionPathExists = "!${acmeDnsFile}";
-        script = ''
-          curl -X POST '${domainCfg.server}/register' \
+        script = let
+          request = { allowfrom = domainCfg.allowUpdateFromIPs; };
+        in ''
+          # TODO: Use goacmedns-register? https://github.com/cpu/goacmedns/tree/f8552ac0b6b570f5fbdc3bcd2fa8487eff07f20f#pre-registration
+          # (would require packaging goacmedns separately just for that command)
+          curl --silent --show-error \
+            -X POST '${domainCfg.server}/register' \
             --header 'Content-Type: application/json' \
-            --data ${escapeShellArg (builtins.toJSON {
-              allowfrom = domainCfg.allowUpdateFromIPs;
-            })} | jq '{
-              # Translate from acme-dns response to goacmedns Account...
-              #
-              # See https://github.com/cpu/goacmedns/issues/7.
-              #
-              # This is gross, but less gross than lego unconditionally
-              # failing without even bothering to check CNAME
-              # after registration :(
-              ${builtins.toJSON domainCfg.certHost}: {
-                FullDomain: .fulldomain,
-                SubDomain: .subdomain,
-                Username: .username,
-                Password: .password,
-              }
-            }' > '${acmeDnsFile}'
+            --data ${escapeShellArg (builtins.toJSON request)} \
+            | jq '{${builtins.toJSON domain}: .}' > '${acmeDnsFile}'
         '';
       };
 
@@ -149,7 +123,7 @@ let cfg = config.services.acme-dns.client; in
         # back to lego's built-in registration support, which doesn't
         # support setting the CIDR origin restrictions.
         requiredBy = [ "acme-${domain}.service" ];
-        script = if !cert.dnsPropagationCheck then "" else ''
+        script = ''
           src=_acme-challenge.${domain}.
           target=$(jq -r .fulldomain '${acmeDnsFile}')
           records=$(dig +short "$src")
