@@ -86,12 +86,12 @@ let cfg = config.services.acme-dns.client; in
       in "${cert.directory}/acme-dns-${domainCfgHash}.json";
     };
 
-    domainMapper = f: domain: baseCfg: f (domainEnv domain baseCfg);
-    mapDomains = f: mapAttrs (domainMapper f) cfg.domains;
-    mapDomainsToList = f: mapAttrsToList (domainMapper f) cfg.domains;
-    mapDomains' = f: listToAttrs (mapDomainsToList f);
+    domainMapper = fName: fAttrs: domain: baseCfg:
+      nameValuePair (fName domain) (fAttrs (domainEnv domain baseCfg));
+
+    mapDomains = fName: fAttrs: mapAttrs' (domainMapper fName fAttrs) cfg.domains;
   in mkIf cfg.enable {
-    security.acme.certs = mapDomains ({ domain, domainCfg, acmeDnsFile, ... }: {
+    security.acme.certs = mapDomains id ({ domain, domainCfg, acmeDnsFile, ... }: {
       dnsProvider = lib.mkDefault "acme-dns";
       credentialsFile = lib.mkDefault
         (pkgs.writeText "lego-${domain}-acme-dns.env" ''
@@ -101,10 +101,7 @@ let cfg = config.services.acme-dns.client; in
     });
 
     systemd.services = let
-      makeService = name: service: env:
-        nameValuePair "acme-dns-${env.domain}-${name}" (service env);
-
-      register = { domain, domainCfg, cert, acmeDnsFile, ... }: let
+      registerService = { domain, domainCfg, cert, acmeDnsFile, ... }: let
         deps = [ "network-online.target" ] ++
           # We assume that if there's a local acme-dns server enabled
           # it's used by the acme-dns client and hence should be waited
@@ -130,8 +127,7 @@ let cfg = config.services.acme-dns.client; in
 
         unitConfig.ConditionPathExists = "!${acmeDnsFile}";
 
-        # TODO: is openssl needed here? (needs testing with HTTPS
-        # acme-dns API)
+        # TODO: is openssl needed here? (needs testing with HTTPS acme-dns API)
         path = [ pkgs.curl pkgs.openssl pkgs.jq ];
         script = let
           request = { allowfrom = domainCfg.allowUpdateFromIPs; };
@@ -151,18 +147,12 @@ let cfg = config.services.acme-dns.client; in
         '';
       };
 
-      check = { domain, cert, acmeDnsFile, ... }: {
+      checkService = { domain, cert, acmeDnsFile, ... }: {
         description = "Check _acme-challenge DNS records for ${domain}";
 
         # We need ${acmeDnsFile} to exist to check the CNAME record.
         requires = [ "acme-dns-${domain}-register.service" ];
         after = [ "acme-dns-${domain}-register.service" ];
-
-        # We use requiredBy rather than wantedBy here to avoid falling
-        # back to lego's built-in registration support, which doesn't
-        # support setting the CIDR origin restrictions.
-        requiredBy = [ "acme-${domain}.service" ];
-        before = [ "acme-${domain}.service" ];
 
         serviceConfig = {
           User = cert.user;
@@ -191,8 +181,17 @@ let cfg = config.services.acme-dns.client; in
           fi
         '';
       };
+
+      acmeService = { domain, ... }: {
+        # We use BindsTo= rather than Wants= here to avoid falling
+        # back to lego's built-in registration support, which doesn't
+        # support setting the CIDR origin restrictions.
+        after = [ "acme-dns-${domain}-check.service" ];
+        bindsTo = [ "acme-dns-${domain}-check.service" ];
+      };
     in
-      mapDomains' (makeService "register" register) //
-      mapDomains' (makeService "check" check);
+      mapDomains (domain: "acme-dns-${domain}-check") checkService //
+      mapDomains (domain: "acme-dns-${domain}-register") registerService //
+      mapDomains (domain: "acme-${domain}") acmeService;
   };
 }
