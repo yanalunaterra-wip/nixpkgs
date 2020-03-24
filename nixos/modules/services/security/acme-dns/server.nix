@@ -2,10 +2,10 @@
 
 with lib;
 
-let cfg = config.services.acme-dns; in
+let cfg = config.services.acme-dns.server; in
 
 {
-  options.services.acme-dns = {
+  options.services.acme-dns.server = {
     enable = mkEnableOption "acme-dns server";
 
     package = mkOption {

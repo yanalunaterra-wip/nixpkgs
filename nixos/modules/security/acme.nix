@@ -314,18 +314,10 @@ in
                 renewOpts = escapeShellArgs (globalOpts ++
                   [ "renew" "--days" (toString cfg.validMinDays) ] ++
                   certOpts ++ data.extraLegoRenewFlags);
-                acmeService = let
-                  # Make sure that the local acme-dns server is started
-                  # before renewing certificates that might use it.
-                  extraDeps = lib.optional
-                    (data.dnsProvider == "acme-dns" &&
-                      config.services.acme-dns.enable)
-                    "acme-dns.service";
-                in {
+                acmeService = {
                   description = "Renew ACME Certificate for ${cert}";
-                  after = [ "network.target" "network-online.target" ]
-                    ++ extraDeps;
-                  wants = [ "network-online.target" ] ++ extraDeps;
+                  after = [ "network.target" "network-online.target" ];
+                  wants = [ "network-online.target" ];
                   wantedBy = [ "multi-user.target" ];
                   # acme-dns requires CNAME support for _acme-challenge
                   # records. This setting only affects the behaviour of

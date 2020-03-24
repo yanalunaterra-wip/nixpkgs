@@ -23,7 +23,7 @@ import ./make-test-python.nix {
         allowedUDPPorts = [ 53 ];
       };
 
-      services.acme-dns = {
+      services.acme-dns.server = {
         enable = true;
         api.ip = "0.0.0.0";
         general = {
@@ -89,11 +89,11 @@ import ./make-test-python.nix {
         domain = "*.example.test";
         user = "nginx";
         group = "nginx";
-        dnsProvider = "acme-dns";
-        credentialsFile = pkgs.writeText "lego-example.test.env" ''
-          ACME_DNS_API_BASE=http://acme-dns.test:8053
-          ACME_DNS_STORAGE_PATH=/var/lib/acme/example.test/acme-dns.json
-        '';
+      };
+
+      services.acme-dns.client = {
+        enable = true;
+        domains."example.test".server = "http://acme-dns.test:8053";
       };
 
       services.nginx.enable = true;
@@ -127,16 +127,17 @@ import ./make-test-python.nix {
     coredns.wait_for_unit("coredns.service")
 
 
-    def lego_failed(_) -> bool:
-        info = webserver.get_unit_info("acme-example.test.service")
+    def acme_dns_check_failed(_) -> bool:
+        info = webserver.get_unit_info("acme-example.test-check.service")
         return info["ActiveState"] == "failed"
 
 
-    # Get the required CNAME record from the lego error message.
-    retry(lego_failed)
+    # Get the required CNAME record from the service error message.
+    retry(acme_dns_check_failed)
     acme_dns_domain = webserver.succeed(
         "journalctl --no-pager --reverse --lines=1 "
-        "--grep='^_acme-challenge\\.example\\.test\\. CNAME '"
+        "--unit=acme-example.test-check.service "
+        "--grep='^  _acme-challenge\\.example\\.test\\. CNAME '"
     ).split("CNAME ")[1]
 
     zone_file = "/etc/coredns/zones/db.example.test"
