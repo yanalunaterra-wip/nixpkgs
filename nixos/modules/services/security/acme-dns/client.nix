@@ -114,47 +114,65 @@ let cfg = config.services.acme-dns.client; in
           lib.optional serverCfg.enable "acme-dns.service";
       in {
         description = "Register acme-dns subdomain for ${domain}";
+
         wants = deps;
         after = deps;
-        # TODO: is openssl needed here? (needs testing with HTTPS
-        # acme-dns API)
-        path = [ pkgs.curl pkgs.openssl pkgs.jq ];
+
         serviceConfig = {
           User = cert.user;
           Group = cert.group;
+          # See <nixpkgs/nixos/modules/security/acme.nix> for rationale.
+          RemainAfterExit = true;
           # Ensure that the certificate directory exists.
-          StateDirectory = "acme/${domain}";
-          StateDirectoryMode = "0700";
+          inherit (config.systemd.services."acme-${domain}".serviceConfig)
+            StateDirectory StateDirectoryMode;
         };
+
         unitConfig.ConditionPathExists = "!${acmeDnsFile}";
+
+        # TODO: is openssl needed here? (needs testing with HTTPS
+        # acme-dns API)
+        path = [ pkgs.curl pkgs.openssl pkgs.jq ];
         script = let
           request = { allowfrom = domainCfg.allowUpdateFromIPs; };
         in ''
+          set -uo pipefail
           # TODO: Use goacmedns-register? https://github.com/cpu/goacmedns/blob/v0.0.2/README.md#pre-registration
           # (would require packaging goacmedns separately just for that command)
-          curl --silent --show-error \
-            -X POST '${domainCfg.server}/register' \
+          exit 999
+          curl --fail --verbose --show-error \
+            '${domainCfg.server}/register' \
             --header 'Content-Type: application/json' \
             --data ${escapeShellArg (builtins.toJSON request)} \
             | jq '{${builtins.toJSON domain}: .}' > '${acmeDnsFile}'
+          exit 42
+          cat '${acmeDnsFile}'
+          exit 420
         '';
       };
 
       check = { domain, cert, acmeDnsFile, ... }: {
         description = "Check _acme-challenge DNS records for ${domain}";
-        path = [ pkgs.dnsutils pkgs.jq ];
-        serviceConfig = {
-          User = cert.user;
-          Group = cert.group;
-        };
+
         # We need ${acmeDnsFile} to exist to check the CNAME record.
         requires = [ "acme-dns-${domain}-register.service" ];
         after = [ "acme-dns-${domain}-register.service" ];
+
         # We use requiredBy rather than wantedBy here to avoid falling
         # back to lego's built-in registration support, which doesn't
         # support setting the CIDR origin restrictions.
         requiredBy = [ "acme-${domain}.service" ];
+        before = [ "acme-${domain}.service" ];
+
+        serviceConfig = {
+          User = cert.user;
+          Group = cert.group;
+          RemainAfterExit = true;
+        };
+
+        path = [ pkgs.dnsutils pkgs.jq ];
         script = ''
+          set -uo pipefail
           src=_acme-challenge.${domain}.
           target=$(jq -r '.${builtins.toJSON domain}.fulldomain' \
             '${acmeDnsFile}')

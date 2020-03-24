@@ -48,11 +48,12 @@ import ./make-test-python.nix {
       environment.etc."coredns/zones/db.example.test" = {
         text = ''
           $ORIGIN example.test.
-          @ 3600 SOA coredns.test. hostmaster.example.test. (
+          $TTL 3600
+          @ SOA coredns.test. hostmaster.example.test. (
             1 ; serial
             86400 7200 600000 1
           )
-          webserver 3600 A ${ipOf nodes.webserver}
+          webserver A ${ipOf nodes.webserver}
         '';
         mode = "0644";
       };
@@ -128,35 +129,45 @@ import ./make-test-python.nix {
 
 
     def acme_dns_check_failed(_) -> bool:
-        info = webserver.get_unit_info("acme-example.test-check.service")
-        return info["ActiveState"] == "failed"
+        print(
+            repr(
+                webserver.succeed(
+                    "cat /var/lib/acme/example.test/acme-dns-486c565ab4cf6c5fc3451728d64c10015dadf156fff99397d9a5399b53485818.json || true"
+                )
+            )
+        )
+        info = webserver.get_unit_info("acme-dns-example.test-check.service")
+        return info["ActiveState"] == "active"
 
 
     # Get the required CNAME record from the service error message.
+    # webserver.wait_for_unit("acme-dns-example.test-register.service")
+    # print(webserver.succeed("journalctl --unit=acme-dns-example.test-register.service"))
     retry(acme_dns_check_failed)
-    acme_dns_domain = webserver.succeed(
-        "journalctl --no-pager --reverse --lines=1 "
-        "--unit=acme-example.test-check.service "
-        "--grep='^  _acme-challenge\\.example\\.test\\. CNAME '"
-    ).split("CNAME ")[1]
+    print(webserver.succeed("journalctl --unit=acme-dns-example.test-check.service"))
+    # acme_dns_domain = webserver.succeed(
+    # "journalctl --no-pager --reverse --lines=1 "
+    # "--unit=acme-dns-example.test-check.service "
+    # "--grep='^  _acme-challenge\\.example\\.test\\. CNAME '"
+    # ).split("CNAME ")[1]
 
-    zone_file = "/etc/coredns/zones/db.example.test"
-    coredns.succeed(
-        f"echo '_acme-challenge 1 CNAME {acme_dns_domain}' >> {zone_file}",
-        f"sed -i 's/1 ; serial/2 ; serial/' {zone_file}",
-    )
+    # zone_file = "/etc/coredns/zones/db.example.test"
+    # coredns.succeed(
+    # f"echo '_acme-challenge 1 CNAME {acme_dns_domain}' >> {zone_file}",
+    # f"sed -i 's/1 ; serial/2 ; serial/' {zone_file}",
+    # )
 
-    webserver.start_job("acme-example.test.service")
-    webserver.wait_for_unit("acme-example.test.service")
-    webserver.succeed(
-        "/run/current-system/fine-tune/child-1/bin/switch-to-configuration test"
-    )
+    # webserver.start_job("acme-example.test.service")
+    # webserver.wait_for_unit("acme-example.test.service")
+    # webserver.succeed(
+    # "/run/current-system/fine-tune/child-1/bin/switch-to-configuration test"
+    # )
 
-    webclient.wait_for_unit("default.target")
-    webclient.succeed("curl https://acme.test:15000/roots/0 > /tmp/ca.crt")
-    webclient.succeed("curl https://acme.test:15000/intermediate-keys/0 >> /tmp/ca.crt")
-    webclient.succeed(
-        "curl --cacert /tmp/ca.crt https://webserver.example.test | grep -qF 'hello world'"
-    )
+    # webclient.wait_for_unit("default.target")
+    # webclient.succeed("curl https://acme.test:15000/roots/0 > /tmp/ca.crt")
+    # webclient.succeed("curl https://acme.test:15000/intermediate-keys/0 >> /tmp/ca.crt")
+    # webclient.succeed(
+    # "curl --cacert /tmp/ca.crt https://webserver.example.test | grep -qF 'hello world'"
+    # )
   '';
 }
