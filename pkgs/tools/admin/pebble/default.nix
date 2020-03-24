@@ -1,26 +1,27 @@
-{ buildGoPackage
+{ buildGoModule
 , fetchFromGitHub
 , lib
 }:
 
 let
-  version = "v2.2.2";
+  version = "v2.3.0";
   pname = "pebble";
-in buildGoPackage {
+in buildGoModule {
   inherit pname version;
-  goPackagePath = "github.com/letsencrypt/${pname}";
 
   src = fetchFromGitHub {
     owner = "letsencrypt";
     repo = pname;
     rev = version;
-    sha256 = "10g6ivdxxp3632wk0gvmp75v9x668kchhmlczbsq8qnsc8sb8pwf";
+    sha256 = "1piwzzfqsdx6s2niczzp4mf4r3qn9nfdgpn7882g52cmmm0vzks2";
   };
 
+  modSha256 = "0n5s5y2gnz4lrla7a52lgmnzkqda1dblhnmv069zcvdfwmf79ac9";
+
   meta = {
-    homepage = "https://github.com/letsencrypt/boulder";
+    homepage = "https://github.com/letsencrypt/pebble";
     description = "A miniature version of Boulder, Pebble is a small RFC 8555 ACME test server not suited for a production CA";
     license = [ lib.licenses.mpl20 ];
-    maintainers = [ ];
+    maintainers = with lib.maintainers; [ emily ];
   };
 }
